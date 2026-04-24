@@ -74,16 +74,17 @@ avec occurrences, total des occurrences, troncature éventuelle).
 
 
 ## Configuration
+Les projets sont enregistrés manuellement dans le fichier suivant,
+dont l'emplacement dépend du système d'exploitation :
 
-Les projets sont enregistrés manuellement dans le fichier suivant :
-
-    ~/.config/scripts/mcp-project/paths.json
+    Linux / macOS   : ~/.config/scripts/mcp-project/paths.json
+    Windows         : %APPDATA%\mcp-project-navigator\paths.json
 
 Format attendu :
 
     {
         "mon-projet": "/chemin/absolu/vers/mon-projet",
-        "autre-projet": "/chemin/absolu/vers/autre-projet"
+        "autre-projet": "C:\\Users\\utilisateur\\projets\\autre-projet"
     }
 
 Le fichier est crée automatiquement au premier démarrage du serveur.

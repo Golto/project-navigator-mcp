@@ -1,12 +1,27 @@
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Optional, Dict
 
 
 logger = logging.getLogger(__name__)
 
-CONFIG_FOLDER = Path.home() / ".config" / "scripts" / "mcp-project"
+
+def _default_config_folder() -> Path:
+    """Return the platform-appropriate configuration directory.
+
+    On Windows, configuration is stored under %APPDATA%\\mcp-project-navigator.
+    On all other platforms, the XDG-style ~/.config/scripts/mcp-project-navigator
+    is used.
+
+    Returns:
+        An absolute Path to the configuration directory.
+    """
+    if sys.platform == "win32":
+        base = Path.home() / "AppData" / "Roaming"
+        return base / "mcp-project-navigator"
+    return Path.home() / ".config" / "scripts" / "mcp-project"
 
 
 class StorageConfig:
@@ -15,6 +30,10 @@ class StorageConfig:
     The configuration is stored under a single base directory and currently
     consists of one JSON file that maps project identifiers to their
     filesystem paths.
+
+    The default directory is platform-dependent:
+        Linux / macOS: `~/.config/scripts/mcp-project-navigator/`
+        Windows: `%APPDATA%\\mcp-project\\`
 
     Attributes:
         base_path (Path): Root directory of the configuration.
@@ -26,9 +45,9 @@ class StorageConfig:
 
         Args:
             base_path: Override the default configuration directory.
-                       Defaults to ~/.config/scripts/mcp-project.
+                       When None, the platform-appropriate default is used.
         """
-        self.base_path = Path(base_path) if base_path is not None else CONFIG_FOLDER
+        self.base_path = Path(base_path) if base_path is not None else _default_config_folder()
         self.paths_file = self.base_path / "paths.json"
         self._ensure_structure()
 
