@@ -192,26 +192,44 @@ def is_file_included(
     return True
 
 
+def _dir_could_contain_match(rel_path: str | Path, patterns: list[str]) -> bool:
+    """Return True if this directory could contain files matching at least one include pattern.
+
+    A directory is a candidate when its normalised path is a strict path prefix
+    of at least one include pattern, or when it matches a pattern directly
+    (e.g. a trailing-slash or ** pattern that covers the directory itself).
+
+    Args:
+        rel_path: Directory path relative to the project root.
+        patterns: Include glob patterns to check against.
+
+    Returns:
+        True if the directory should be entered, False if it can be pruned.
+    """
+    normalised = _to_posix_rel(rel_path)
+    if not normalised:
+        return True  # root is always a candidate
+
+    for pattern in patterns:
+        # Direct match: pattern covers the directory itself (e.g. "src/**")
+        if _build_spec([pattern]).match_file(normalised):
+            return True
+        # Prefix match: directory is an ancestor of the pattern target.
+        # Strip a leading slash if present (anchored gitignore pattern).
+        clean = pattern.lstrip("/")
+        if clean.startswith(normalised + "/"):
+            return True
+
+    return False
+
+
 def is_dir_traversable(
     rel_path: str | Path,
     include_patterns: list[str] | None,
     exclude_patterns: list[str],
 ) -> bool:
-    """Decide whether a directory should be traversed.
-
-    A directory is always traversed unless it is explicitly matched by an
-    exclude pattern. Include patterns are intentionally not applied to
-    directories: a directory that does not itself match '**/*.py' must
-    still be entered to discover the .py files it contains.
-
-    Args:
-        rel_path: Directory path relative to the project root.
-        include_patterns: Whitelist patterns (ignored for directories).
-        exclude_patterns: Blacklist patterns; a match stops traversal.
-
-    Returns:
-        True if the directory should be entered, False if it should be skipped.
-    """
     if exclude_patterns and matches_any(rel_path, exclude_patterns):
+        return False
+    if include_patterns is not None and not _dir_could_contain_match(rel_path, include_patterns):
         return False
     return True
