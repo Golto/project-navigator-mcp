@@ -1,7 +1,8 @@
-import fnmatch
 import logging
-from typing import List, Tuple
 from pathlib import Path, PurePosixPath
+from typing import Optional
+
+import pathspec
 
 
 logger = logging.getLogger(__name__)
@@ -11,21 +12,19 @@ logger = logging.getLogger(__name__)
 # Gitignore parsing
 # ---------------------------------------------------------------------------
 
-def load_gitignore_patterns(project_root: Path, gitignore_path: str) -> List[str]:
+def load_gitignore_patterns(project_root: Path, gitignore_path: str) -> list[str]:
     """Parse a gitignore-style file and return its active patterns.
 
     Comment lines (starting with '#') and blank lines are stripped.
-    Negation patterns (starting with '!') are returned as-is so that
-    callers can handle them if they choose to; this module does not
-    implement negation in matching.
+    Negation patterns (starting with '!') are passed through as-is;
+    pathspec handles their semantics during matching.
 
     Args:
         project_root: Absolute path to the project root directory.
-        gitignore_path: Path to the gitignore-style file relative to
-                        project_root.
+        gitignore_path: Path to the gitignore-style file relative to project_root.
 
     Returns:
-        A list of raw pattern strings ready for glob matching.
+        A list of raw pattern strings ready to be compiled by pathspec.
 
     Raises:
         FileNotFoundError: If the resolved file does not exist.
@@ -39,16 +38,14 @@ def load_gitignore_patterns(project_root: Path, gitignore_path: str) -> List[str
             f"Exclusion file '{gitignore_path}' not found in project root {project_root}."
         )
 
-    patterns: List[str] = []
+    patterns: list[str] = []
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         patterns.append(line)
 
-    logger.debug(
-        "Loaded %d pattern(s) from '%s'.", len(patterns), gitignore_path
-    )
+    logger.debug("Loaded %d pattern(s) from '%s'.", len(patterns), gitignore_path)
     return patterns
 
 
@@ -58,15 +55,15 @@ def load_gitignore_patterns(project_root: Path, gitignore_path: str) -> List[str
 
 def build_filter_set(
     project_root: Path,
-    include: List[str] | None = None,
-    exclude: List[str] | None = None,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
     exclude_from: str | None = None,
-) -> Tuple[List[str] | None, List[str], List[str]]:
+) -> tuple[list[str] | None, list[str], list[str]]:
     """Consolidate include, exclude, and exclude_from into ready-to-use filter lists.
 
-    The exclude_from file patterns are merged into the exclude list.
-    If the file is missing a warning string is returned instead of raising
-    so the tree tool can surface it to the caller without aborting.
+    Patterns from exclude_from are merged into the exclude list.
+    If the file is missing or unreadable, a warning is appended instead of
+    raising, so callers can surface it without aborting the operation.
 
     Args:
         project_root: Absolute path to the project root.
@@ -80,13 +77,12 @@ def build_filter_set(
         - exclude_patterns is the merged exclude list (may be empty).
         - warnings is a list of non-fatal warning strings (may be empty).
     """
-    warnings: List[str] = []
-    merged_exclude: List[str] = list(exclude) if exclude else []
+    warnings: list[str] = []
+    merged_exclude: list[str] = list(exclude) if exclude else []
 
     if exclude_from is not None:
         try:
-            gitignore_patterns = load_gitignore_patterns(project_root, exclude_from)
-            merged_exclude.extend(gitignore_patterns)
+            merged_exclude.extend(load_gitignore_patterns(project_root, exclude_from))
         except FileNotFoundError:
             warnings.append(
                 f"Exclusion file '{exclude_from}' was not found in the project root. "
@@ -111,66 +107,80 @@ def build_filter_set(
 # Matching helpers
 # ---------------------------------------------------------------------------
 
-def _normalise(rel_path: str | Path) -> str:
-    """Return a POSIX-style relative path string with no leading slash.
+def _to_posix_rel(rel_path: str | Path) -> str:
+    """Strip the project root prefix and return a clean POSIX-style relative path.
+
+    walker.py builds paths as '<project_root_name>/<rest>', for example
+    'my-project/src/main.py'. pathspec expects paths relative to the root
+    itself ('src/main.py'), so the leading component must be removed.
 
     Args:
-        rel_path: A relative path in any form.
+        rel_path: Path as produced by the walker, in any OS format.
 
     Returns:
-        A forward-slash string such as 'src/app/main.py'.
+        A forward-slash string with the root prefix removed, such as
+        'src/main.py' or 'app/core/filtering.py'.
     """
-    return str(PurePosixPath(Path(rel_path)))
+    posix = str(PurePosixPath(Path(rel_path)))
+    # Remove the first path component (project root name)
+    if "/" in posix:
+        return posix.split("/", 1)[1]
+    # Entry is the root itself; return empty string
+    return ""
 
 
-def matches_any(rel_path: str | Path, patterns: List[str]) -> bool:
-    """Return True if rel_path matches at least one glob pattern.
+def _build_spec(patterns: list[str]) -> pathspec.PathSpec:
+    """Compile a list of patterns into a pathspec.PathSpec object.
 
-    Each pattern is tested in two ways:
-    - Against the full relative path  (e.g. 'src/app/main.py')
-    - Against the bare filename only  (e.g. 'main.py')
-
-    This ensures that simple name patterns ('*.py', '__pycache__') work
-    as expected alongside path patterns ('src/**', 'dist/', 'a/b/*.js').
-
-    Trailing slashes on patterns are stripped before matching so that
-    directory-only gitignore patterns (e.g. 'dist/') match correctly
-    regardless of whether a slash is present.
+    Uses GitWildMatchPattern for full gitignore semantics: leading slash
+    anchoring, trailing slash directory markers, ** globbing, and negation.
 
     Args:
-        rel_path: Path relative to the project root, in any OS format.
-        patterns: Glob patterns to test against.
+        patterns: Raw pattern strings.
 
     Returns:
-        True if at least one pattern matches, False otherwise.
+        A compiled PathSpec ready for match_file calls.
     """
-    normalised = _normalise(rel_path)
-    name = Path(rel_path).name
+    return pathspec.PathSpec.from_lines(
+        pathspec.patterns.GitWildMatchPattern, patterns
+    )
 
-    for raw_pattern in patterns:
-        pattern = raw_pattern.rstrip("/")
-        if fnmatch.fnmatch(normalised, pattern):
-            return True
-        if fnmatch.fnmatch(name, pattern):
-            return True
 
-    return False
+def matches_any(rel_path: str | Path, patterns: list[str]) -> bool:
+    """Return True if rel_path matches at least one pattern.
+
+    Matching uses pathspec with GitWildMatchPattern, which provides full
+    gitignore semantics: ** globbing, trailing slash directory markers,
+    leading slash anchoring, and negation. The path is normalised to a
+    POSIX string relative to the project root before matching.
+
+    Args:
+        rel_path: Path relative to the project root, as produced by the
+                  walker (includes the root name as the first component).
+        patterns: Glob patterns to compile and test against.
+
+    Returns:
+        True if the compiled spec matches the normalised path.
+    """
+    normalised = _to_posix_rel(rel_path)
+    return _build_spec(patterns).match_file(normalised)
 
 
 def is_file_included(
     rel_path: str | Path,
-    include_patterns: List[str] | None,
-    exclude_patterns: List[str],
+    include_patterns: list[str] | None,
+    exclude_patterns: list[str],
 ) -> bool:
     """Decide whether a file entry should appear in the tree.
 
-    A file is included when it is not excluded AND matches the include
-    whitelist (if one is set). Both filters operate on the relative path.
+    A file is included when it is not matched by any exclude pattern AND
+    matches at least one include pattern (if a whitelist is set).
+    Exclude is evaluated first.
 
     Args:
         rel_path: File path relative to the project root.
         include_patterns: Whitelist patterns, or None to allow everything.
-        exclude_patterns: Blacklist patterns; checked first.
+        exclude_patterns: Blacklist patterns; checked before include.
 
     Returns:
         True if the file should be included, False otherwise.
@@ -184,15 +194,15 @@ def is_file_included(
 
 def is_dir_traversable(
     rel_path: str | Path,
-    include_patterns: List[str] | None,
-    exclude_patterns: List[str],
+    include_patterns: list[str] | None,
+    exclude_patterns: list[str],
 ) -> bool:
     """Decide whether a directory should be traversed.
 
-    A directory is always traversed unless it is explicitly excluded.
-    Include patterns are intentionally NOT applied to directories: a
-    directory that does not itself match '**/*.py' must still be entered
-    to discover the .py files it contains.
+    A directory is always traversed unless it is explicitly matched by an
+    exclude pattern. Include patterns are intentionally not applied to
+    directories: a directory that does not itself match '**/*.py' must
+    still be entered to discover the .py files it contains.
 
     Args:
         rel_path: Directory path relative to the project root.
