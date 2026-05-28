@@ -1,15 +1,3 @@
-from .mcp import get_mcp
+from .mcp import get_mcp, init
 
-# Load MCP components
-from . import (
-    prompts,
-    resources,
-    tools,
-)
-
-__all = [
-    "get_mcp",
-    "prompts",
-    "resources",
-    "tools",
-]
+__all__ = ["get_mcp", "init"]
