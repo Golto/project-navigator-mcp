@@ -3,6 +3,19 @@ import logging
 
 TRANSPORTS = ("stdio", "sse")
 
+# --- Initialisation globale pour mcp dev/run ---
+# Ces imports déclenchent init() + enregistrement des outils
+from app.mcp import init
+init(allowed_hosts=None)
+
+import app.tools   # noqa: F401
+import app.prompts  # noqa: F401
+import app.resources  # noqa: F401
+
+from app.mcp import get_mcp
+mcp = get_mcp()  # objet global visible par `mcp dev` et `mcp run`
+# -----------------------------------------------
+
 
 def main() -> None:
     transport = "stdio"
@@ -27,20 +40,9 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # NOTE: init() must happen before importing app.tools, because tool
-    # modules call get_mcp() at import time to register their decorators.
-    from app.mcp import init
-    init(allowed_hosts=allowed_hosts if transport == "sse" else None)
-
-    # Now safe to import tools
-    import app.tools  # noqa: F401
-    import app.prompts  # noqa: F401
-    import app.resources  # noqa: F401
-
-    from app.mcp import get_mcp
-    mcp = get_mcp()
-
     if transport == "sse":
+        # Re-init avec allowed_hosts pour SSE
+        init(allowed_hosts=allowed_hosts)
         mcp.settings.host = host
         mcp.settings.port = port
 
